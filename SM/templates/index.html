@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="pl" data-bs-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wizualizacja Danych Gazu - E-Nos</title>
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body {
+            background-color: #121212;
+            color: #ffffff;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        .chart-container {
+            position: relative;
+            width: 100%;
+            background-color: #1e1e1e;
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+        .calibration-overlay {
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(20, 20, 20, 0.95);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            border-radius: 12px;
+            z-index: 1050;
+            backdrop-filter: blur(4px);
+        }
+        .status-badge {
+            font-size: 1rem;
+            padding: 8px 12px;
+        }
+        .data-console {
+            background-color: #000;
+            color: #0f0;
+            font-family: 'Courier New', Courier, monospace;
+            padding: 15px;
+            height: 200px;
+            overflow-y: auto;
+            border-radius: 8px;
+            border: 1px solid #333;
+            font-size: 0.9rem;
+        }
+        #views-wrapper {
+            position: relative;
+            min-height: 400px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container mt-4">
+        <div class="row mb-3 align-items-center">
+            <div class="col-lg-6 col-md-5">
+                <h2 class="fw-bold text-primary mb-1">Detekcja Gazów - E-Nos</h2>
+                <p class="text-secondary mb-0">Multi-view Dashboard (Znormalizowane % R0)</p>
+            </div>
+            <div class="col-lg-6 col-md-7 text-end d-flex flex-column justify-content-center align-items-end">
+                <div class="d-flex flex-wrap gap-2 mb-2 justify-content-end align-items-center">
+                    <span class="badge bg-secondary status-badge">
+                        Aktywna Etykieta: <strong id="display-label">Brak</strong>
+                    </span>
+                    <span id="ai-prediction-container" class="badge bg-info status-badge text-dark" style="display: none;">
+                        AI Predykcja: <strong id="display-prediction">--</strong> (<span id="display-confidence">--</span>)
+                    </span>
+                    <button id="btn-recalibrate" class="btn btn-outline-warning btn-sm" title="Rozpocznij ponowną kalibrację czujników w czystym powietrzu">
+                        Rekalibruj (R0)
+                    </button>
+                </div>
+                <div class="input-group input-group-sm" style="max-width: 320px;">
+                    <input type="text" id="label-input" class="form-control bg-dark text-light border-secondary" placeholder="Wpisz np. Kawa, Czosnek">
+                    <button class="btn btn-primary" id="btn-set-label" type="button">Zapisz Etykietę</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Przełącznik widoków -->
+        <div class="row mb-3">
+            <div class="col-12 text-center">
+                <div class="btn-group" role="group">
+                    <input type="radio" class="btn-check" name="viewMode" id="modeDashboard" autocomplete="off" checked>
+                    <label class="btn btn-outline-primary" for="modeDashboard">Tryb Dashboard (4 wykresy)</label>
+
+                    <input type="radio" class="btn-check" name="viewMode" id="modeSingle" autocomplete="off">
+                    <label class="btn btn-outline-primary" for="modeSingle">Tryb Single Focus (Pojedynczy)</label>
+                </div>
+            </div>
+        </div>
+
+        <div id="views-wrapper">
+            <!-- Kalibracja & Rozgrzewanie Overlay -->
+            <div id="calibration-box" class="calibration-overlay" style="display: none;">
+                <h3 id="cal-title" class="mb-3 text-warning">Trwa Przygotowanie Czujników...</h3>
+                <div class="progress w-50 mb-2" style="height: 25px;">
+                    <div id="cal-progress-bar" class="progress-bar progress-bar-striped progress-bar-animated bg-warning" role="progressbar" style="width: 0%;">0%</div>
+                </div>
+                <p class="text-light mb-2">Pozostało: <span id="cal-time-left">--</span> s</p>
+                <div class="text-secondary small mb-3">
+                    Bieżące odczyty: 
+                    TGS2610: <b id="cal-v1" class="text-light">--</b> | 
+                    TGS2603: <b id="cal-v2" class="text-light">--</b> | 
+                    TGS813: <b id="cal-v3" class="text-light">--</b>
+                </div>
+                <div>
+                    <button id="btn-skip-warmup" class="btn btn-outline-info btn-sm me-2">Pomiń rozgrzewanie (Kalibruj teraz)</button>
+                    <button id="btn-finish-cal" class="btn btn-outline-warning btn-sm" style="display: none;">Zakończ kalibrację teraz (Zapisz R0)</button>
+                </div>
+            </div>
+
+            <!-- Dashboard View -->
+            <div id="dashboardView">
+                <div class="row">
+                    <div class="col-md-6 mb-3">
+                        <div class="chart-container" style="height: 33vh; padding: 10px;">
+                            <canvas id="gasChart1"></canvas>
+                        </div>
+                    </div>
+                    <div class="col-md-6 mb-3">
+                        <div class="chart-container" style="height: 33vh; padding: 10px;">
+                            <canvas id="gasChart2"></canvas>
+                        </div>
+                    </div>
+                    <div class="col-md-6 mb-3">
+                        <div class="chart-container" style="height: 33vh; padding: 10px;">
+                            <canvas id="gasChart3"></canvas>
+                        </div>
+                    </div>
+                    <div class="col-md-6 mb-3">
+                        <div class="chart-container" style="height: 33vh; padding: 10px;">
+                            <div class="form-check form-switch position-absolute" style="top: 10px; right: 15px; z-index: 100;">
+                                <input class="form-check-input" type="checkbox" id="dashCombinedAxesToggle">
+                                <label class="form-check-label text-secondary" style="font-size: 0.75rem;" for="dashCombinedAxesToggle">Independent Y-Axes</label>
+                            </div>
+                            <canvas id="gasChartCombined"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Single Focus View -->
+            <div id="singleFocusView" style="display: none;">
+                <div class="row mb-2">
+                    <div class="col-12 text-center">
+                        <div class="btn-group btn-group-sm" role="group">
+                            <input type="radio" class="btn-check" name="singleSource" id="srcAll" autocomplete="off" checked>
+                            <label class="btn btn-outline-light" for="srcAll">Wszystkie</label>
+                            
+                            <input type="radio" class="btn-check" name="singleSource" id="src1" autocomplete="off">
+                            <label class="btn btn-outline-danger" for="src1">TGS2610</label>
+                            
+                            <input type="radio" class="btn-check" name="singleSource" id="src2" autocomplete="off">
+                            <label class="btn btn-outline-primary" for="src2">TGS2603</label>
+                            
+                            <input type="radio" class="btn-check" name="singleSource" id="src3" autocomplete="off">
+                            <label class="btn btn-outline-warning" for="src3">TGS813</label>
+                        </div>
+                        
+                        <div class="form-check form-switch d-inline-block ms-3" id="singleAxesToggleContainer">
+                            <input class="form-check-input" type="checkbox" id="singleAxesToggle">
+                            <label class="form-check-label text-secondary text-sm" style="font-size: 0.85rem;" for="singleAxesToggle">Independent Y-Axes</label>
+                        </div>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-12">
+                        <div class="chart-container" style="height: 60vh;">
+                            <canvas id="gasChartSingle"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="row mt-2">
+            <div class="col-12">
+                <h6 class="text-secondary mb-1">Konsola Danych Live (Ostatnie 100 odczytów)</h6>
+                <div id="data-console" class="data-console">
+                    <div>System uruchomiony. Oczekiwanie na dane z czujników...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Socket.IO i logika aplikacji -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <script>
+        const MAX_DATA_POINTS = 100;
+
+        // Współdzielone tablice danych, by zachować pełną synchronizację osi X
+        const sharedLabels = [];
+        const sharedData1 = [];
+        const sharedData2 = [];
+        const sharedData3 = [];
+
+        // Helper dla datasetów
+        const createDs = (idx, yAxisID = 'y') => {
+            const configs = [
+                { label: 'TGS2610 (%)', data: sharedData1, borderColor: '#FF6384', backgroundColor: 'rgba(255, 99, 132, 0.1)' },
+                { label: 'TGS2603 (%)', data: sharedData2, borderColor: '#36A2EB', backgroundColor: 'rgba(54, 162, 235, 0.1)' },
+                { label: 'TGS813 (%)', data: sharedData3, borderColor: '#FFCE56', backgroundColor: 'rgba(255, 206, 86, 0.1)' }
+            ];
+            return { ...configs[idx], borderWidth: 2, tension: 0.4, pointRadius: 0, yAxisID };
+        };
+
+        const commonYAxis = {
+            grid: { color: 'rgba(255,255,255,0.1)' },
+            grace: '10%',
+            title: { display: false }
+        };
+
+        const defaultOptions = {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: { duration: 0 },
+            scales: {
+                x: { grid: { color: 'rgba(255,255,255,0.1)' }, ticks: { display: false } },
+                y: { ...commonYAxis }
+            },
+            plugins: {
+                legend: { labels: { color: '#fff' } }
+            }
+        };
+
+        const applyIndependentAxes = (chart, isIndependent) => {
+            if (isIndependent) {
+                chart.options.scales.y = { ...commonYAxis, position: 'left', ticks: { color: '#FF6384' } };
+                chart.options.scales.y1 = { ...commonYAxis, position: 'right', ticks: { color: '#36A2EB' }, grid: { drawOnChartArea: false } };
+                chart.options.scales.y2 = { ...commonYAxis, position: 'right', ticks: { color: '#FFCE56' }, grid: { drawOnChartArea: false } };
+                
+                chart.data.datasets[0].yAxisID = 'y';
+                chart.data.datasets[1].yAxisID = 'y1';
+                chart.data.datasets[2].yAxisID = 'y2';
+            } else {
+                chart.options.scales.y = { ...commonYAxis, position: 'left', ticks: { color: '#ccc' } };
+                delete chart.options.scales.y1;
+                delete chart.options.scales.y2;
+                
+                chart.data.datasets.forEach(ds => ds.yAxisID = 'y');
+            }
+            chart.update();
+        };
+
+        const initChart = (ctxId, datasetsIds, titleText) => {
+            const opt = JSON.parse(JSON.stringify(defaultOptions));
+            if (datasetsIds.length === 1) {
+                opt.plugins.legend.display = false;
+            }
+            if (titleText) {
+                opt.plugins.title = { display: true, text: titleText, color: '#ccc', font: { size: 14 } };
+            }
+            
+            const datasets = datasetsIds.map(id => createDs(id));
+            
+            return new Chart(document.getElementById(ctxId).getContext('2d'), {
+                type: 'line',
+                data: { labels: sharedLabels, datasets: datasets },
+                options: opt
+            });
+        };
+
+        const chart1 = initChart('gasChart1', [0], 'TGS2610');
+        const chart2 = initChart('gasChart2', [1], 'TGS2603');
+        const chart3 = initChart('gasChart3', [2], 'TGS813');
+        const chartComb = initChart('gasChartCombined', [0, 1, 2], 'Porównanie Trendów');
+        const chartSingle = initChart('gasChartSingle', [0, 1, 2], null);
+
+        document.getElementById('dashCombinedAxesToggle').addEventListener('change', (e) => {
+            applyIndependentAxes(chartComb, e.target.checked);
+        });
+
+        document.getElementById('singleAxesToggle').addEventListener('change', (e) => {
+            applyIndependentAxes(chartSingle, e.target.checked);
+        });
+
+        document.getElementById('modeDashboard').addEventListener('change', () => {
+            document.getElementById('dashboardView').style.display = 'block';
+            document.getElementById('singleFocusView').style.display = 'none';
+        });
+        document.getElementById('modeSingle').addEventListener('change', () => {
+            document.getElementById('dashboardView').style.display = 'none';
+            document.getElementById('singleFocusView').style.display = 'block';
+            setTimeout(() => {
+                chartSingle.resize();
+                chartSingle.update();
+            }, 50);
+        });
+
+        const singleSourceRadios = document.querySelectorAll('input[name="singleSource"]');
+        singleSourceRadios.forEach(radio => {
+            radio.addEventListener('change', (e) => {
+                const id = e.target.id;
+                const toggleContainer = document.getElementById('singleAxesToggleContainer');
+                
+                if (id === 'srcAll') {
+                    chartSingle.data.datasets.forEach(ds => ds.hidden = false);
+                    toggleContainer.style.display = 'inline-block';
+                } else {
+                    const idx = id === 'src1' ? 0 : (id === 'src2' ? 1 : 2);
+                    chartSingle.data.datasets.forEach((ds, i) => ds.hidden = (i !== idx));
+                    toggleContainer.style.display = 'none';
+                }
+                chartSingle.update();
+            });
+        });
+
+        // Socket.IO i sterowanie
+        const socket = io();
+        const calibrationBox = document.getElementById('calibration-box');
+        const calProgressBar = document.getElementById('cal-progress-bar');
+        const calTimeLeft = document.getElementById('cal-time-left');
+        const calTitle = document.getElementById('cal-title');
+        const calV1 = document.getElementById('cal-v1');
+        const calV2 = document.getElementById('cal-v2');
+        const calV3 = document.getElementById('cal-v3');
+        const btnSkipWarmup = document.getElementById('btn-skip-warmup');
+        const btnFinishCal = document.getElementById('btn-finish-cal');
+
+        // Pobranie początkowego stanu z serwera
+        fetch('/get_status')
+            .then(res => res.json())
+            .then(status => {
+                if (status.current_label && status.current_label !== 'Brak') {
+                    document.getElementById('display-label').innerText = status.current_label;
+                    document.getElementById('display-label').parentElement.classList.replace('bg-secondary', 'bg-success');
+                }
+                if (status.has_model) {
+                    document.getElementById('ai-prediction-container').style.display = 'inline-block';
+                }
+                if (status.is_warming_up) {
+                    calibrationBox.style.display = 'flex';
+                    calTitle.innerText = 'Rozgrzewanie czujników...';
+                    calTitle.className = 'mb-3 text-info';
+                    btnSkipWarmup.style.display = 'inline-block';
+                    btnFinishCal.style.display = 'none';
+                } else if (status.is_calibrating) {
+                    calibrationBox.style.display = 'flex';
+                    calTitle.innerText = 'Trwa Kalibracja (zbieranie bazy czystego powietrza)...';
+                    calTitle.className = 'mb-3 text-warning';
+                    btnSkipWarmup.style.display = 'none';
+                    btnFinishCal.style.display = 'inline-block';
+                }
+            })
+            .catch(e => console.log('Błąd get_status:', e));
+
+        socket.on('connect', () => console.log('Połączono z serwerem via WebSocket'));
+
+        socket.on('warmup_progress', (data) => {
+            calibrationBox.style.display = 'flex';
+            calTitle.innerText = 'Rozgrzewanie czujników...';
+            calTitle.className = 'mb-3 text-info';
+            calProgressBar.className = 'progress-bar progress-bar-striped progress-bar-animated bg-info';
+            calProgressBar.style.width = data.progress + '%';
+            calProgressBar.innerText = data.progress + '%';
+            calTimeLeft.innerText = data.time_left;
+            btnSkipWarmup.style.display = 'inline-block';
+            btnFinishCal.style.display = 'none';
+            if (data.raw) {
+                calV1.innerText = data.raw[0];
+                calV2.innerText = data.raw[1];
+                calV3.innerText = data.raw[2];
+            }
+        });
+
+        socket.on('warmup_done', () => {
+            calTitle.innerText = 'Trwa Kalibracja (zbieranie bazy czystego powietrza)...';
+            calTitle.className = 'mb-3 text-warning';
+            btnSkipWarmup.style.display = 'none';
+            btnFinishCal.style.display = 'inline-block';
+        });
+
+        socket.on('calibration_progress', (data) => {
+            calibrationBox.style.display = 'flex';
+            calTitle.innerText = 'Trwa Kalibracja (zbieranie próbek powietrza)...';
+            calTitle.className = 'mb-3 text-warning';
+            calProgressBar.className = 'progress-bar progress-bar-striped progress-bar-animated bg-warning';
+            calProgressBar.style.width = data.progress + '%';
+            calProgressBar.innerText = data.progress + '%';
+            calTimeLeft.innerText = data.time_left;
+            btnSkipWarmup.style.display = 'none';
+            btnFinishCal.style.display = 'inline-block';
+            if (data.raw) {
+                calV1.innerText = data.raw[0];
+                calV2.innerText = data.raw[1];
+                calV3.innerText = data.raw[2];
+            }
+        });
+
+        socket.on('calibration_done', () => {
+            calibrationBox.style.display = 'none';
+        });
+
+        socket.on('sensor_data', (data) => {
+            calibrationBox.style.display = 'none';
+            
+            sharedLabels.push('');
+            sharedData1.push(data.norm1);
+            sharedData2.push(data.norm2);
+            sharedData3.push(data.norm3);
+
+            if (sharedLabels.length > MAX_DATA_POINTS) {
+                sharedLabels.shift();
+                sharedData1.shift();
+                sharedData2.shift();
+                sharedData3.shift();
+            }
+
+            chart1.update();
+            chart2.update();
+            chart3.update();
+            chartComb.update();
+            chartSingle.update();
+            
+            // Obsługa AI Predykcji
+            if (data.prediction) {
+                const aiCont = document.getElementById('ai-prediction-container');
+                aiCont.style.display = 'inline-block';
+                document.getElementById('display-prediction').innerText = data.prediction;
+                document.getElementById('display-confidence').innerText = (data.confidence || 0) + '%';
+            }
+
+            const dataConsole = document.getElementById('data-console');
+            const consoleLine = document.createElement('div');
+            let aiText = data.prediction ? ` | [AI: ${data.prediction} ${data.confidence}%]` : '';
+            consoleLine.innerText = `[${data.timestamp}] TGS2610: ${data.norm1.toFixed(1)}%, TGS2603: ${data.norm2.toFixed(1)}%, TGS813: ${data.norm3.toFixed(1)}% | Etykieta: ${data.label}${aiText}`;
+            dataConsole.appendChild(consoleLine);
+            
+            if (dataConsole.childElementCount > 100) {
+                dataConsole.removeChild(dataConsole.firstElementChild);
+            }
+            dataConsole.scrollTop = dataConsole.scrollHeight;
+        });
+
+        // Ustawianie etykiety
+        const saveLabel = () => {
+            const newLabel = document.getElementById('label-input').value.trim();
+            if (newLabel === '') return;
+
+            fetch('/set_label', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ label: newLabel })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if(data.status === 'success') {
+                    document.getElementById('display-label').innerText = data.label;
+                    document.getElementById('display-label').parentElement.classList.replace('bg-secondary', 'bg-success');
+                    document.getElementById('label-input').value = '';
+                }
+            })
+            .catch(err => console.error('Błąd zmiany etykiety:', err));
+        };
+
+        document.getElementById('btn-set-label').addEventListener('click', saveLabel);
+        document.getElementById('label-input').addEventListener('keyup', (e) => {
+            if (e.key === 'Enter') saveLabel();
+        });
+
+        // Przyciski sterowania procesem
+        btnSkipWarmup.addEventListener('click', () => {
+            fetch('/skip_warmup', { method: 'POST' })
+                .then(r => r.json())
+                .then(d => console.log('Pominięto rozgrzewanie:', d));
+        });
+
+        btnFinishCal.addEventListener('click', () => {
+            fetch('/finish_calibration', { method: 'POST' })
+                .then(r => r.json())
+                .then(d => console.log('Zakończono kalibrację:', d));
+        });
+
+        document.getElementById('btn-recalibrate').addEventListener('click', () => {
+            if (confirm('Czy na pewno chcesz rozpocząć nową kalibrację (ustalić nowy poziom odniesienia R0)?')) {
+                fetch('/recalibrate', { method: 'POST' })
+                    .then(r => r.json())
+                    .then(d => console.log('Rozpoczęto rekalibrację:', d));
+            }
+        });
+    </script>
+</body>
+</html>
